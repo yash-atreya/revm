@@ -321,11 +321,21 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
 
         let gas = handlers::handle_call_return::<GSPEC>(self.env(), call_result, ret_gas);
 
-        let (state, logs, gas_used, gas_refunded) = self.finalize::<GSPEC>(
-            &gas,
-            #[cfg(feature = "optimism")]
-            l1_block_info.as_ref(),
-        );
+        self.reimburse_caller(&gas);
+        self.reward_beneficiary(&gas);
+
+        let gas_refunded = self.calculate_gas_refund(&gas);
+        let gas_used = gas.spend() - gas_refunded;
+
+
+        // reset journal and return present state.
+        let (state, logs) = self.data.journaled_state.finalize();
+
+        // let (state, logs, gas_used, gas_refunded) = self.finalize::<GSPEC>(
+        //     &gas,
+        //     #[cfg(feature = "optimism")]
+        //     l1_block_info.as_ref(),
+        // );
 
         let result = match call_result.into() {
             SuccessOrHalt::Success(reason) => ExecutionResult::Success {
@@ -396,6 +406,71 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             },
             inspector,
             _phantomdata: PhantomData {},
+        }
+    }
+
+    /// Calculate gas refund for transaction.
+    ///
+    /// If config is set to disable gas refund, it will return 0.
+    ///
+    /// If spec is set to london, it will decrease the maximum refund amount to 5th part of
+    /// gas spend. (Before london it was 2th part of gas spend)
+    #[inline]
+    pub fn calculate_gas_refund(&self, gas: &Gas) -> u64 {
+        if self.data.env.cfg.is_gas_refund_disabled() {
+            0
+        } else {
+            // EIP-3529: Reduction in refunds
+            let max_refund_quotient = if GSPEC::enabled(LONDON) { 5 } else { 2 };
+            min(gas.refunded() as u64, gas.spend() / max_refund_quotient)
+        }
+    }
+
+    #[inline]
+    fn reimburse_caller(&mut self, gas: &Gas) {
+        let caller = self.data.env.tx.caller;
+        let gas_refund = self.calculate_gas_refund(gas);
+        let effective_gas_price = self.data.env.effective_gas_price();
+
+        // return balance of not spend gas.
+        let Ok((caller_account, _)) = self.data.journaled_state.load_account(caller, self.data.db)
+        else {
+            panic!("caller account not found");
+        };
+
+        caller_account.info.balance = caller_account
+            .info
+            .balance
+            .saturating_add(effective_gas_price * U256::from(gas.remaining() + gas_refund));
+    }
+
+    #[inline]
+    fn reward_beneficiary(&mut self, gas: &Gas) {
+        let beneficiary = self.data.env.block.coinbase;
+        let gas_refund = self.calculate_gas_refund(gas);
+        let effective_gas_price = self.data.env.effective_gas_price();
+
+        // transfer fee to coinbase/beneficiary.
+        if !self.data.env.cfg.disable_coinbase_tip {
+            // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
+            let coinbase_gas_price = if GSPEC::enabled(LONDON) {
+                effective_gas_price.saturating_sub(self.data.env.block.basefee)
+            } else {
+                effective_gas_price
+            };
+
+            let Ok((coinbase_account, _)) = self
+                .data
+                .journaled_state
+                .load_account(beneficiary, self.data.db)
+            else {
+                panic!("coinbase account not found");
+            };
+            coinbase_account.mark_touch();
+            coinbase_account.info.balance = coinbase_account
+                .info
+                .balance
+                .saturating_add(coinbase_gas_price * U256::from(gas.spend() - gas_refund));
         }
     }
 
