@@ -1,32 +1,7 @@
+//! Handler related to Optimism chain
+
 use crate::interpreter::{return_ok, return_revert, Gas, InstructionResult};
 use crate::primitives::{Env, Spec};
-
-/// Handle output of the transaction
-#[cfg(not(feature = "optimism"))]
-pub fn handle_call_return<SPEC: Spec>(
-    env: &Env,
-    call_result: InstructionResult,
-    returned_gas: Gas,
-) -> Gas {
-    let tx_gas_limit = env.tx.gas_limit;
-    // Spend the gas limit. Gas is reimbursed when the tx returns successfully.
-    let mut gas = Gas::new(tx_gas_limit);
-    gas.record_cost(tx_gas_limit);
-
-    if crate::USE_GAS {
-        match call_result {
-            return_ok!() => {
-                gas.erase_cost(returned_gas.remaining());
-                gas.record_refund(returned_gas.refunded());
-            }
-            return_revert!() => {
-                gas.erase_cost(returned_gas.remaining());
-            }
-            _ => {}
-        }
-    }
-    gas
-}
 
 /// Handle output of the transaction
 #[cfg(feature = "optimism")]
@@ -95,53 +70,20 @@ pub fn handle_call_return<SPEC: Spec>(
     gas
 }
 
-#[cfg(not(feature = "optimism"))]
-#[cfg(test)]
-mod tests {
-    use revm_interpreter::primitives::CancunSpec;
+#[inline]
+pub fn calculate_gas_refund(&self, gas: &Gas) -> u64 {
+    let is_deposit =
+        self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
 
-    use super::*;
-
-    #[test]
-    fn test_consume_gas() {
-        let mut env = Env::default();
-        env.tx.gas_limit = 100;
-
-        let gas = handle_call_return::<CancunSpec>(&env, InstructionResult::Stop, Gas::new(90));
-        assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spend(), 10);
-        assert_eq!(gas.refunded(), 0);
-    }
-
-    #[test]
-    fn test_consume_gas_with_refund() {
-        let mut env = Env::default();
-        env.tx.gas_limit = 100;
-
-        let mut return_gas = Gas::new(90);
-        return_gas.record_refund(30);
-
-        let gas =
-            handle_call_return::<CancunSpec>(&env, InstructionResult::Stop, return_gas.clone());
-        assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spend(), 10);
-        assert_eq!(gas.refunded(), 30);
-
-        let gas = handle_call_return::<CancunSpec>(&env, InstructionResult::Revert, return_gas);
-        assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spend(), 10);
-        assert_eq!(gas.refunded(), 0);
-    }
-
-    #[test]
-    fn test_revert_gas() {
-        let mut env = Env::default();
-        env.tx.gas_limit = 100;
-
-        let gas = handle_call_return::<CancunSpec>(&env, InstructionResult::Revert, Gas::new(90));
-        assert_eq!(gas.remaining(), 90);
-        assert_eq!(gas.spend(), 10);
-        assert_eq!(gas.refunded(), 0);
+    // Prior to Regolith, deposit transactions did not receive gas refunds.
+    let is_gas_refund_disabled =
+        (self.data.env.cfg.optimism && is_deposit && !SPEC::enabled(SpecId::REGOLITH));
+    if is_gas_refund_disabled || self.data.env.cfg.is_gas_refund_disabled() {
+        0
+    } else {
+        // EIP-3529: Reduction in refunds
+        let max_refund_quotient = if GSPEC::enabled(LONDON) { 5 } else { 2 };
+        min(gas.refunded() as u64, gas.spend() / max_refund_quotient)
     }
 }
 
