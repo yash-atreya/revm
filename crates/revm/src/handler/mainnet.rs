@@ -34,10 +34,13 @@ pub fn handle_call_return<SPEC: Spec>(
 }
 
 #[inline]
-pub fn handle_reimburse_caller<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, gas: &Gas) {
+pub fn handle_reimburse_caller<SPEC: Spec, DB: Database>(
+    data: &mut EVMData<'_, DB>,
+    gas: &Gas,
+    gas_refund: u64,
+) {
     let _ = data;
     let caller = data.env.tx.caller;
-    let gas_refund = calculate_gas_refund::<SPEC>(&data.env, gas);
     let effective_gas_price = data.env.effective_gas_price();
 
     // return balance of not spend gas.
@@ -53,30 +56,30 @@ pub fn handle_reimburse_caller<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, 
 
 /// Reward beneficiary with gas fee.
 #[inline]
-pub fn reward_beneficiary<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, gas: &Gas) {
+pub fn reward_beneficiary<SPEC: Spec, DB: Database>(
+    data: &mut EVMData<'_, DB>,
+    gas: &Gas,
+    gas_refund: u64,
+) {
     let beneficiary = data.env.block.coinbase;
-    let gas_refund = calculate_gas_refund::<SPEC>(&data.env, gas);
     let effective_gas_price = data.env.effective_gas_price();
 
     // transfer fee to coinbase/beneficiary.
-    if !data.env.cfg.disable_coinbase_tip {
-        // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
-        let coinbase_gas_price = if SPEC::enabled(LONDON) {
-            effective_gas_price.saturating_sub(data.env.block.basefee)
-        } else {
-            effective_gas_price
-        };
+    // EIP-1559 discard basefee for coinbase transfer. Basefee amount of gas is discarded.
+    let coinbase_gas_price = if SPEC::enabled(LONDON) {
+        effective_gas_price.saturating_sub(data.env.block.basefee)
+    } else {
+        effective_gas_price
+    };
 
-        let Ok((coinbase_account, _)) = data.journaled_state.load_account(beneficiary, data.db)
-        else {
-            panic!("coinbase account not found");
-        };
-        coinbase_account.mark_touch();
-        coinbase_account.info.balance = coinbase_account
-            .info
-            .balance
-            .saturating_add(coinbase_gas_price * U256::from(gas.spend() - gas_refund));
-    }
+    let Ok((coinbase_account, _)) = data.journaled_state.load_account(beneficiary, data.db) else {
+        panic!("coinbase account not found");
+    };
+    coinbase_account.mark_touch();
+    coinbase_account.info.balance = coinbase_account
+        .info
+        .balance
+        .saturating_add(coinbase_gas_price * U256::from(gas.spend() - gas_refund));
 }
 
 /// Calculate gas refund for transaction.

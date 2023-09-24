@@ -72,8 +72,7 @@ pub fn handle_call_return<SPEC: Spec>(
 
 #[inline]
 pub fn calculate_gas_refund(&self, gas: &Gas) -> u64 {
-    let is_deposit =
-        self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
+    let is_deposit = self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
 
     // Prior to Regolith, deposit transactions did not receive gas refunds.
     let is_gas_refund_disabled =
@@ -84,6 +83,55 @@ pub fn calculate_gas_refund(&self, gas: &Gas) -> u64 {
         // EIP-3529: Reduction in refunds
         let max_refund_quotient = if GSPEC::enabled(LONDON) { 5 } else { 2 };
         min(gas.refunded() as u64, gas.spend() / max_refund_quotient)
+    }
+}
+
+/// Reward beneficiary with gas fee.
+#[inline]
+pub fn reward_beneficiary<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, gas: &Gas) {
+    let is_deposit = self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
+    let disable_coinbase_tip = (self.data.env.cfg.optimism && is_deposit);
+
+    // transfer fee to coinbase/beneficiary.
+    if !disable_coinbase_tip {
+        mainnet::reward_beneficiary::<SPEC>(self.data, gas, gas_refund);
+    }
+
+    if self.data.env.cfg.optimism && !is_deposit {
+        // If the transaction is not a deposit transaction, fees are paid out
+        // to both the Base Fee Vault as well as the L1 Fee Vault.
+        let Some(l1_block_info) = l1_block_info else {
+            panic!("[OPTIMISM] Failed to load L1 block information.");
+        };
+
+        let Some(enveloped_tx) = &self.data.env.tx.optimism.enveloped_tx else {
+            panic!("[OPTIMISM] Failed to load enveloped transaction.");
+        };
+
+        let l1_cost = l1_block_info.calculate_tx_l1_cost::<SPEC>(enveloped_tx, is_deposit);
+
+        // Send the L1 cost of the transaction to the L1 Fee Vault.
+        let Ok((l1_fee_vault_account, _)) = self
+            .data
+            .journaled_state
+            .load_account(optimism::L1_FEE_RECIPIENT, self.data.db)
+        else {
+            panic!("[OPTIMISM] Failed to load L1 Fee Vault account");
+        };
+        l1_fee_vault_account.mark_touch();
+        l1_fee_vault_account.info.balance += l1_cost;
+
+        // Send the base fee of the transaction to the Base Fee Vault.
+        let Ok((base_fee_vault_account, _)) = self
+            .data
+            .journaled_state
+            .load_account(optimism::BASE_FEE_RECIPIENT, self.data.db)
+        else {
+            panic!("[OPTIMISM] Failed to load Base Fee Vault account");
+        };
+        base_fee_vault_account.mark_touch();
+        base_fee_vault_account.info.balance +=
+            l1_block_info.l1_base_fee.mul(U256::from(gas.spend()));
     }
 }
 

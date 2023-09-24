@@ -1,4 +1,4 @@
-use crate::handler::{self, Handler};
+use crate::handler::Handler;
 use crate::interpreter::{
     analysis::to_analysed, gas, instruction_result::SuccessOrHalt, return_ok, CallContext,
     CallInputs, CallScheme, Contract, CreateInputs, CreateScheme, Gas, Host, InstructionResult,
@@ -6,16 +6,15 @@ use crate::interpreter::{
 };
 use crate::journaled_state::{is_precompile, JournalCheckpoint};
 use crate::primitives::{
-    create2_address, create_address, keccak256, Account, AnalysisKind, Bytecode, Bytes, EVMError,
-    EVMResult, Env, ExecutionResult, HashMap, InvalidTransaction, Log, Output, ResultAndState,
-    Spec,
+    create2_address, create_address, keccak256, AnalysisKind, Bytecode, Bytes, EVMError, EVMResult,
+    Env, ExecutionResult, InvalidTransaction, Log, Output, ResultAndState, Spec,
     SpecId::{self, *},
     TransactTo, B160, B256, U256,
 };
 use crate::{db::Database, journaled_state::JournaledState, precompile, Inspector};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::{cmp::min, marker::PhantomData};
+use core::marker::PhantomData;
 use revm_interpreter::gas::initial_tx_gas;
 use revm_interpreter::MAX_CODE_SIZE;
 use revm_precompile::{Precompile, Precompiles};
@@ -196,7 +195,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
         let tx_gas_limit = env.tx.gas_limit;
 
         #[cfg(feature = "optimism")]
-        let (tx_mint, is_deposit, tx_l1_cost, l1_block_info) = {
+        let (is_deposit, tx_l1_cost, l1_block_info) = {
             let is_deposit = env.tx.optimism.source_hash.is_some();
 
             let l1_block_info =
@@ -215,7 +214,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
                     .unwrap_or(U256::ZERO)
             });
 
-            (env.tx.optimism.mint, is_deposit, tx_l1_cost, l1_block_info)
+            (is_deposit, tx_l1_cost, l1_block_info)
         };
 
         let initial_gas_spend = initial_tx_gas::<GSPEC>(
@@ -244,7 +243,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
         if self.data.env.cfg.optimism {
             EVMImpl::<GSPEC, DB, INSPECT>::commit_mint_value(
                 tx_caller,
-                tx_mint,
+                env.tx.optimism.mint,
                 self.data.db,
                 journal,
             )?;
@@ -325,15 +324,18 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
             .handler
             .call_return(&self.data.env, call_result, ret_gas);
 
+        let gas_refunded = self.handler.calculate_gas_refund(&self.data.env, &gas);
+
         // Reimburse the caller
-        self.handler.reimburse_caller(&mut self.data, &gas);
+        self.handler
+            .reimburse_caller(&mut self.data, &gas, gas_refunded);
 
         // Reward beneficiary
-        self.handler.reward_beneficiary(&mut self.data, &gas);
+        self.handler
+            .reward_beneficiary(&mut self.data, &gas, gas_refunded);
 
-        // calculate refund
-        let gas_refunded = self.handler.calculate_gas_refund(&self.data.env, &gas);
-        let gas_used = gas.spend() - gas_refunded;
+        // used gas with refund calculated.
+        let final_gas_used = gas.spend() - gas_refunded;
 
         // reset journal and return present state.
         let (state, logs) = self.data.journaled_state.finalize();
@@ -341,13 +343,13 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
         let result = match call_result.into() {
             SuccessOrHalt::Success(reason) => ExecutionResult::Success {
                 reason,
-                gas_used,
+                gas_used: final_gas_used,
                 gas_refunded,
                 logs,
                 output,
             },
             SuccessOrHalt::Revert => ExecutionResult::Revert {
-                gas_used,
+                gas_used: final_gas_used,
                 output: match output {
                     Output::Call(return_value) => return_value,
                     Output::Create(return_value, _) => return_value,
@@ -371,7 +373,10 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
                         acc.info.nonce = acc.info.nonce.checked_add(1).unwrap_or(u64::MAX);
                     }
                 }
-                ExecutionResult::Halt { reason, gas_used }
+                ExecutionResult::Halt {
+                    reason,
+                    gas_used: final_gas_used,
+                }
             }
             SuccessOrHalt::FatalExternalError => {
                 return Err(EVMError::Database(self.data.error.take().unwrap()));
@@ -410,7 +415,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             _phantomdata: PhantomData {},
         }
     }
-
+    /*
     fn finalize<SPEC: Spec>(
         &mut self,
         gas: &Gas,
@@ -453,13 +458,11 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
                 .balance
                 .saturating_add(effective_gas_price * U256::from(gas.remaining() + gas_refunded));
 
-            let disable_coinbase_tip = self.data.env.cfg.disable_coinbase_tip;
-
+            let disable_coinbase_tip = false;
             // All deposit transactions skip the coinbase tip in favor of paying the
             // various fee vaults.
             #[cfg(feature = "optimism")]
-            let disable_coinbase_tip =
-                disable_coinbase_tip || (self.data.env.cfg.optimism && is_deposit);
+            let disable_coinbase_tip = (self.data.env.cfg.optimism && is_deposit);
 
             // transfer fee to coinbase/beneficiary.
             if !disable_coinbase_tip {
@@ -535,7 +538,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
         let (new_state, logs) = self.data.journaled_state.finalize();
         (new_state, logs, gas_used, gas_refunded)
     }
-
+    */
     #[inline(never)]
     fn prepare_create(&mut self, inputs: &CreateInputs) -> Result<PreparedCreate, CreateResult> {
         let gas = Gas::new(inputs.gas_limit);

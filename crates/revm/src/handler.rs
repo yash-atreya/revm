@@ -14,8 +14,8 @@ pub struct Handler<DB: Database> {
     // Uses env, call resul and returned gas from the call to determine the gas
     // that is returned from transaction execution..
     pub call_return: fn(&Env, InstructionResult, Gas) -> Gas,
-    pub reimburse_caller: fn(&mut EVMData<'_, DB>, &Gas),
-    pub reward_beneficiary: fn(&mut EVMData<'_, DB>, &Gas),
+    pub reimburse_caller: fn(&mut EVMData<'_, DB>, &Gas, u64),
+    pub reward_beneficiary: fn(&mut EVMData<'_, DB>, &Gas, u64),
     pub calculate_gas_refund: fn(&Env, &Gas) -> u64,
 }
 
@@ -24,9 +24,9 @@ impl<DB: Database> Handler<DB> {
     pub fn mainnet<SPEC: Spec>() -> Self {
         Self {
             call_return: mainnet::handle_call_return::<SPEC>,
+            calculate_gas_refund: mainnet::calculate_gas_refund::<SPEC>,
             reimburse_caller: mainnet::handle_reimburse_caller::<SPEC, DB>,
             reward_beneficiary: mainnet::reward_beneficiary::<SPEC, DB>,
-            calculate_gas_refund: mainnet::calculate_gas_refund::<SPEC>,
         }
     }
 
@@ -35,8 +35,11 @@ impl<DB: Database> Handler<DB> {
     pub fn optimism<SPEC: Spec>() -> Self {
         Self {
             call_return: optimism::handle_call_return::<SPEC>,
-            reimburse_caller: optimism::handle_reimburse_caller::<SPEC, DB>,
+            // we reinburse caller the same was as in mainnet.
+            // Refund is calculated differently then mainnet.
+            reimburse_caller: mainnet::handle_reimburse_caller::<SPEC, DB>,
             calculate_gas_refund: optimism::calculate_gas_refund::<SPEC>,
+            reward_beneficiary: optimism::reward_beneficiary::<SPEC, DB>,
         }
     }
 
@@ -46,8 +49,8 @@ impl<DB: Database> Handler<DB> {
     }
 
     /// Reimburse the caller with gas that were not spend.
-    pub fn reimburse_caller(&self, data: &mut EVMData<'_, DB>, gas: &Gas) {
-        (self.reimburse_caller)(data, gas)
+    pub fn reimburse_caller(&self, data: &mut EVMData<'_, DB>, gas: &Gas, gas_refund: u64) {
+        (self.reimburse_caller)(data, gas, gas_refund)
     }
 
     /// Calculate gas refund for transaction. Some chains have it disabled.
@@ -56,7 +59,7 @@ impl<DB: Database> Handler<DB> {
     }
 
     /// Reward beneficiary
-    pub fn reward_beneficiary(&self, data: &mut EVMData<'_, DB>, gas: &Gas) {
-        (self.reward_beneficiary)(data, gas)
+    pub fn reward_beneficiary(&self, data: &mut EVMData<'_, DB>, gas: &Gas, gas_refund: u64) {
+        (self.reward_beneficiary)(data, gas, gas_refund)
     }
 }
