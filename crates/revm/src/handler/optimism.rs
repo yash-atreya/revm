@@ -1,7 +1,14 @@
 //! Handler related to Optimism chain
 
-use crate::interpreter::{return_ok, return_revert, Gas, InstructionResult};
-use crate::primitives::{Env, Spec};
+use core::ops::Mul;
+
+use super::mainnet;
+use crate::{
+    interpreter::{return_ok, return_revert, Gas, InstructionResult},
+    optimism,
+    primitives::{db::Database, EVMError, Env, Spec, SpecId::REGOLITH, U256},
+    EVMData,
+};
 
 /// Handle output of the transaction
 #[cfg(feature = "optimism")]
@@ -10,7 +17,6 @@ pub fn handle_call_return<SPEC: Spec>(
     call_result: InstructionResult,
     returned_gas: Gas,
 ) -> Gas {
-    use crate::primitives::SpecId::REGOLITH;
     let is_deposit = env.tx.optimism.source_hash.is_some();
     let is_optimism = env.cfg.optimism;
     let tx_system = env.tx.optimism.is_system_transaction;
@@ -71,50 +77,50 @@ pub fn handle_call_return<SPEC: Spec>(
 }
 
 #[inline]
-pub fn calculate_gas_refund(&self, gas: &Gas) -> u64 {
-    let is_deposit = self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
+pub fn calculate_gas_refund<SPEC: Spec>(env: &Env, gas: &Gas) -> u64 {
+    let is_deposit = env.cfg.optimism && env.tx.optimism.source_hash.is_some();
 
     // Prior to Regolith, deposit transactions did not receive gas refunds.
-    let is_gas_refund_disabled =
-        (self.data.env.cfg.optimism && is_deposit && !SPEC::enabled(SpecId::REGOLITH));
-    if is_gas_refund_disabled || self.data.env.cfg.is_gas_refund_disabled() {
+    let is_gas_refund_disabled = env.cfg.optimism && is_deposit && !SPEC::enabled(REGOLITH);
+    if is_gas_refund_disabled {
         0
     } else {
-        // EIP-3529: Reduction in refunds
-        let max_refund_quotient = if GSPEC::enabled(LONDON) { 5 } else { 2 };
-        min(gas.refunded() as u64, gas.spend() / max_refund_quotient)
+        mainnet::calculate_gas_refund::<SPEC>(env, gas)
     }
 }
 
 /// Reward beneficiary with gas fee.
 #[inline]
-pub fn reward_beneficiary<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, gas: &Gas) {
-    let is_deposit = self.data.env.cfg.optimism && self.data.env.tx.optimism.source_hash.is_some();
-    let disable_coinbase_tip = (self.data.env.cfg.optimism && is_deposit);
+pub fn reward_beneficiary<SPEC: Spec, DB: Database>(
+    data: &mut EVMData<'_, DB>,
+    gas: &Gas,
+    gas_refund: u64,
+) -> Result<(), EVMError<DB::Error>> {
+    let is_deposit = data.env.cfg.optimism && data.env.tx.optimism.source_hash.is_some();
+    let disable_coinbase_tip = data.env.cfg.optimism && is_deposit;
 
     // transfer fee to coinbase/beneficiary.
     if !disable_coinbase_tip {
-        mainnet::reward_beneficiary::<SPEC>(self.data, gas, gas_refund);
+        mainnet::reward_beneficiary::<SPEC, DB>(data, gas, gas_refund)?;
     }
 
-    if self.data.env.cfg.optimism && !is_deposit {
+    if data.env.cfg.optimism && !is_deposit {
         // If the transaction is not a deposit transaction, fees are paid out
         // to both the Base Fee Vault as well as the L1 Fee Vault.
-        let Some(l1_block_info) = l1_block_info else {
+        let Some(l1_block_info) = data.l1_block_info.clone() else {
             panic!("[OPTIMISM] Failed to load L1 block information.");
         };
 
-        let Some(enveloped_tx) = &self.data.env.tx.optimism.enveloped_tx else {
+        let Some(enveloped_tx) = &data.env.tx.optimism.enveloped_tx else {
             panic!("[OPTIMISM] Failed to load enveloped transaction.");
         };
 
         let l1_cost = l1_block_info.calculate_tx_l1_cost::<SPEC>(enveloped_tx, is_deposit);
 
         // Send the L1 cost of the transaction to the L1 Fee Vault.
-        let Ok((l1_fee_vault_account, _)) = self
-            .data
+        let Ok((l1_fee_vault_account, _)) = data
             .journaled_state
-            .load_account(optimism::L1_FEE_RECIPIENT, self.data.db)
+            .load_account(optimism::L1_FEE_RECIPIENT, data.db)
         else {
             panic!("[OPTIMISM] Failed to load L1 Fee Vault account");
         };
@@ -122,10 +128,9 @@ pub fn reward_beneficiary<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, 
         l1_fee_vault_account.info.balance += l1_cost;
 
         // Send the base fee of the transaction to the Base Fee Vault.
-        let Ok((base_fee_vault_account, _)) = self
-            .data
+        let Ok((base_fee_vault_account, _)) = data
             .journaled_state
-            .load_account(optimism::BASE_FEE_RECIPIENT, self.data.db)
+            .load_account(optimism::BASE_FEE_RECIPIENT, data.db)
         else {
             panic!("[OPTIMISM] Failed to load Base Fee Vault account");
         };
@@ -133,6 +138,7 @@ pub fn reward_beneficiary<SPEC: Spec, DB: Database>(data: &mut EVMData<'_, DB>, 
         base_fee_vault_account.info.balance +=
             l1_block_info.l1_base_fee.mul(U256::from(gas.spend()));
     }
+    Ok(())
 }
 
 #[cfg(feature = "optimism")]

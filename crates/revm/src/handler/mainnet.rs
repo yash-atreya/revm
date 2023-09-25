@@ -1,11 +1,11 @@
 //! Mainnet related handlers.
+use revm_interpreter::primitives::EVMError;
 
-use crate::interpreter::{return_ok, return_revert, Gas, InstructionResult};
-use crate::primitives::SpecId::LONDON;
-use crate::primitives::{Env, Spec};
-use crate::EVMData;
-use revm_interpreter::primitives::db::Database;
-use revm_interpreter::primitives::U256;
+use crate::{
+    interpreter::{return_ok, return_revert, Gas, InstructionResult},
+    primitives::{db::Database, Env, Spec, SpecId::LONDON, U256},
+    EVMData,
+};
 
 /// Handle output of the transaction
 pub fn handle_call_return<SPEC: Spec>(
@@ -38,20 +38,23 @@ pub fn handle_reimburse_caller<SPEC: Spec, DB: Database>(
     data: &mut EVMData<'_, DB>,
     gas: &Gas,
     gas_refund: u64,
-) {
+) -> Result<(), EVMError<DB::Error>> {
     let _ = data;
     let caller = data.env.tx.caller;
     let effective_gas_price = data.env.effective_gas_price();
 
     // return balance of not spend gas.
-    let Ok((caller_account, _)) = data.journaled_state.load_account(caller, data.db) else {
-        panic!("caller account not found");
-    };
+    let (caller_account, _) = data
+        .journaled_state
+        .load_account(caller, data.db)
+        .map_err(EVMError::Database)?;
 
     caller_account.info.balance = caller_account
         .info
         .balance
         .saturating_add(effective_gas_price * U256::from(gas.remaining() + gas_refund));
+
+    Ok(())
 }
 
 /// Reward beneficiary with gas fee.
@@ -60,7 +63,7 @@ pub fn reward_beneficiary<SPEC: Spec, DB: Database>(
     data: &mut EVMData<'_, DB>,
     gas: &Gas,
     gas_refund: u64,
-) {
+) -> Result<(), EVMError<DB::Error>> {
     let beneficiary = data.env.block.coinbase;
     let effective_gas_price = data.env.effective_gas_price();
 
@@ -72,14 +75,18 @@ pub fn reward_beneficiary<SPEC: Spec, DB: Database>(
         effective_gas_price
     };
 
-    let Ok((coinbase_account, _)) = data.journaled_state.load_account(beneficiary, data.db) else {
-        panic!("coinbase account not found");
-    };
+    let (coinbase_account, _) = data
+        .journaled_state
+        .load_account(beneficiary, data.db)
+        .map_err(EVMError::Database)?;
+
     coinbase_account.mark_touch();
     coinbase_account.info.balance = coinbase_account
         .info
         .balance
         .saturating_add(coinbase_gas_price * U256::from(gas.spend() - gas_refund));
+
+    Ok(())
 }
 
 /// Calculate gas refund for transaction.
