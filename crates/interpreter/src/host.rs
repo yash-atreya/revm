@@ -11,11 +11,7 @@ mod dummy;
 /// EVM context host.
 pub trait Host {
     fn step(&mut self, interpreter: &mut Interpreter) -> InstructionResult;
-    fn step_end(
-        &mut self,
-        interpreter: &mut Interpreter,
-        ret: InstructionResult,
-    ) -> InstructionResult;
+    fn step_end(&mut self, interpreter: &mut Interpreter) -> InstructionResult;
 
     fn env(&mut self) -> &mut Env;
 

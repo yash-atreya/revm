@@ -45,7 +45,7 @@ pub use revm_interpreter::primitives;
 
 // reexport inspector implementations
 pub use inspector::inspectors;
-pub use inspector::Inspector;
+pub use inspector::{inspector_instruction, make_inspector_instruction_table, Inspector};
 
 // export Optimism types, helpers, and constants
 #[cfg(feature = "optimism")]

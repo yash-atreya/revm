@@ -5,6 +5,7 @@ use crate::interpreter::{
     Interpreter, SelfDestructResult, Transfer, CALL_STACK_LIMIT,
 };
 use crate::journaled_state::{is_precompile, JournalCheckpoint};
+use crate::make_inspector_instruction_table;
 use crate::primitives::{
     create2_address, create_address, keccak256, Address, AnalysisKind, Bytecode, Bytes, EVMError,
     EVMResult, Env, ExecutionResult, InvalidTransaction, Log, Output, ResultAndState, Spec,
@@ -12,9 +13,13 @@ use crate::primitives::{
 };
 use crate::{db::Database, journaled_state::JournaledState, precompile, Inspector};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use revm_interpreter::gas::initial_tx_gas;
+use revm_interpreter::opcode::{
+    make_boxed_instruction_table, make_instruction_table, BoxedInstructionTableArc,
+};
 use revm_interpreter::MAX_CODE_SIZE;
 use revm_precompile::{Precompile, Precompiles};
 
@@ -35,6 +40,7 @@ pub struct EVMData<'a, DB: Database> {
 pub struct EVMImpl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> {
     data: EVMData<'a, DB>,
     inspector: &'a mut dyn Inspector<DB>,
+    instruction_table: BoxedInstructionTableArc,
     handler: Handler<DB>,
     _phantomdata: PhantomData<GSPEC>,
 }
@@ -152,7 +158,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
     }
 }
 
-impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> Transact<DB::Error>
     for EVMImpl<'a, GSPEC, DB, INSPECT>
 {
     fn preverify_transaction(&mut self) -> Result<(), EVMError<DB::Error>> {
@@ -394,7 +400,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> Transact<DB::Error>
     }
 }
 
-impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, INSPECT> {
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, INSPECT> {
     pub fn new(
         db: &'a mut DB,
         env: &'a mut Env,
@@ -402,6 +408,17 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
         precompiles: Precompiles,
     ) -> Self {
         let journaled_state = JournaledState::new(precompiles.len(), GSPEC::SPEC_ID);
+        let instruction_table = if true {
+            let instruction_table =
+                make_inspector_instruction_table(make_instruction_table::<GSPEC>());
+            //instruction_table[00] = Box::new(|_, _| {
+            //    panic!("Instruction 0x00 should never be called");
+            //});
+            Arc::new(instruction_table)
+        } else {
+            Arc::new(make_boxed_instruction_table::<GSPEC>())
+        };
+
         Self {
             data: EVMData {
                 env,
@@ -413,6 +430,7 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
                 l1_block_info: None,
             },
             inspector,
+            instruction_table,
             handler: Handler::mainnet::<GSPEC>(),
             _phantomdata: PhantomData {},
         }
@@ -654,10 +672,16 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
             self.inspector
                 .initialize_interp(&mut interpreter, &mut self.data);
         }
+        // cloning arc is cheap
+        let instruction_table = self.instruction_table.clone();
         let exit_reason = if INSPECT {
-            interpreter.run_inspect::<Self, GSPEC>(self)
+            //let host = self as &mut dyn Host;
+            //interpreter.run_inspect(&instruction_table, host)
+            let host = self as &mut dyn Host;
+            interpreter.run(&instruction_table, host)
         } else {
-            interpreter.run::<Self, GSPEC>(self)
+            let host = self as &mut dyn Host;
+            interpreter.run(&instruction_table, host)
         };
 
         (exit_reason, interpreter)
@@ -819,15 +843,15 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
     }
 }
 
-impl<'a, GSPEC: Spec, DB: Database + 'a, const INSPECT: bool> Host
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> Host
     for EVMImpl<'a, GSPEC, DB, INSPECT>
 {
     fn step(&mut self, interp: &mut Interpreter) -> InstructionResult {
         self.inspector.step(interp, &mut self.data)
     }
 
-    fn step_end(&mut self, interp: &mut Interpreter, ret: InstructionResult) -> InstructionResult {
-        self.inspector.step_end(interp, &mut self.data, ret)
+    fn step_end(&mut self, interp: &mut Interpreter) -> InstructionResult {
+        self.inspector.step_end(interp, &mut self.data)
     }
 
     fn env(&mut self) -> &mut Env {

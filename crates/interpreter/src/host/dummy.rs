@@ -39,11 +39,7 @@ impl Host for DummyHost {
     }
 
     #[inline]
-    fn step_end(
-        &mut self,
-        _interp: &mut Interpreter,
-        _ret: InstructionResult,
-    ) -> InstructionResult {
+    fn step_end(&mut self, _interp: &mut Interpreter) -> InstructionResult {
         InstructionResult::Continue
     }
 

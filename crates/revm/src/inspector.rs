@@ -1,15 +1,17 @@
-use crate::evm_impl::EVMData;
-use crate::interpreter::{CallInputs, CreateInputs, Gas, InstructionResult, Interpreter};
-use crate::primitives::{db::Database, Address, Bytes, B256, U256};
-
-use auto_impl::auto_impl;
-
 #[cfg(feature = "std")]
 mod customprinter;
 mod gas;
+mod instruction;
 mod noop;
 #[cfg(all(feature = "std", feature = "serde"))]
 mod tracer_eip3155;
+
+use crate::evm_impl::EVMData;
+use crate::interpreter::{CallInputs, CreateInputs, Gas, InstructionResult, Interpreter};
+use crate::primitives::{db::Database, Address, Bytes, B256, U256};
+use auto_impl::auto_impl;
+
+pub use instruction::{inspector_instruction, make_inspector_instruction_table};
 
 /// All Inspectors implementations that revm has.
 pub mod inspectors {
@@ -72,7 +74,6 @@ pub trait Inspector<DB: Database> {
         &mut self,
         _interp: &mut Interpreter,
         _data: &mut EVMData<'_, DB>,
-        _eval: InstructionResult,
     ) -> InstructionResult {
         InstructionResult::Continue
     }

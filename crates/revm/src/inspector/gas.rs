@@ -49,7 +49,6 @@ impl<DB: Database> Inspector<DB> for GasInspector {
         &mut self,
         interp: &mut crate::interpreter::Interpreter,
         _data: &mut EVMData<'_, DB>,
-        _eval: InstructionResult,
     ) -> InstructionResult {
         let last_gas = self.gas_remaining;
         self.gas_remaining = interp.gas.remaining();
@@ -138,12 +137,11 @@ mod tests {
             &mut self,
             interp: &mut Interpreter,
             data: &mut EVMData<'_, DB>,
-            eval: InstructionResult,
         ) -> InstructionResult {
-            self.gas_inspector.step_end(interp, data, eval);
+            self.gas_inspector.step_end(interp, data);
             self.gas_remaining_steps
                 .push((self.pc, self.gas_inspector.gas_remaining()));
-            eval
+            interp.instruction_result
         }
 
         fn call(
