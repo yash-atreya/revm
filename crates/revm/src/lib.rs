@@ -29,6 +29,8 @@ pub use db::{
 pub use db::{Database, DatabaseCommit, InMemoryDB};
 pub use evm::{evm_inner, new, EVM};
 pub use evm_impl::{EVMData, EVMImpl, Transact};
+use interpreter::opcode::make_instruction_table;
+use interpreter::primitives::BerlinSpec;
 pub use journaled_state::{is_precompile, JournalCheckpoint, JournalEntry, JournaledState};
 
 // reexport `revm_precompiles`
@@ -52,3 +54,14 @@ pub use inspector::{inspector_instruction, make_inspector_instruction_table, Ins
 pub use optimism::{L1BlockInfo, BASE_FEE_RECIPIENT, L1_BLOCK_CONTRACT, L1_FEE_RECIPIENT};
 
 pub use handler::Handler;
+
+pub fn test() {
+    let inst: interpreter::opcode::InstructionTable<
+        EVMImpl<'static, BerlinSpec, db::EmptyDB, true, ()>,
+    > = make_instruction_table::<primitives::BerlinSpec, EVMImpl<'static, BerlinSpec, _, true, ()>>(
+    );
+    let test: interpreter::opcode::BoxedInstructionTable<
+        'static,
+        EVMImpl<'_, BerlinSpec, _, true, ()>,
+    > = make_inspector_instruction_table(inst);
+}

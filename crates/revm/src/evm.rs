@@ -205,7 +205,7 @@ pub fn evm_inner<'a, DB: Database, const INSPECT: bool>(
 ) -> Box<dyn Transact<DB::Error> + 'a> {
     macro_rules! create_evm {
         ($spec:ident) => {
-            Box::new(EVMImpl::<'a, $spec, DB, INSPECT>::new(
+            Box::new(EVMImpl::<'a, $spec, DB, INSPECT, ()>::new(
                 db,
                 env,
                 insp,

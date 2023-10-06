@@ -13,6 +13,8 @@ pub trait Host {
     fn step(&mut self, interpreter: &mut Interpreter) -> InstructionResult;
     fn step_end(&mut self, interpreter: &mut Interpreter) -> InstructionResult;
 
+    //fn generic(&mut self) -> &mut T;
+
     fn env(&mut self) -> &mut Env;
 
     /// load account. Returns (is_cold,is_new_account)

@@ -128,9 +128,9 @@ impl Interpreter {
 
     /// Executes the instruction at the current instruction pointer.
     #[inline(always)]
-    pub fn step<FN>(&mut self, instruction_table: &[FN; 256], host: &mut dyn Host)
+    pub fn step<FN, H: Host>(&mut self, instruction_table: &[FN; 256], host: &mut H)
     where
-        FN: Fn(&mut Interpreter, &mut dyn Host),
+        FN: Fn(&mut Interpreter, &mut H),
     {
         // Get current opcode.
         let opcode = unsafe { *self.instruction_pointer };
@@ -145,13 +145,13 @@ impl Interpreter {
     }
 
     /// Executes the interpreter until it returns or stops.
-    pub fn run<FN>(
+    pub fn run<FN, H: Host>(
         &mut self,
         instruction_table: &[FN; 256],
-        host: &mut dyn Host,
+        host: &mut H,
     ) -> InstructionResult
     where
-        FN: Fn(&mut Interpreter, &mut dyn Host),
+        FN: Fn(&mut Interpreter, &mut H),
     {
         while self.instruction_result == InstructionResult::Continue {
             self.step(instruction_table, host);

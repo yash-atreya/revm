@@ -37,12 +37,13 @@ pub struct EVMData<'a, DB: Database> {
     pub l1_block_info: Option<optimism::L1BlockInfo>,
 }
 
-pub struct EVMImpl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> {
+pub struct EVMImpl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool, T: 'a> {
     data: EVMData<'a, DB>,
     inspector: &'a mut dyn Inspector<DB>,
-    instruction_table: BoxedInstructionTableArc,
+    instruction_table: BoxedInstructionTableArc<'a, Self>,
     handler: Handler<DB>,
     _phantomdata: PhantomData<GSPEC>,
+    _phamtom_data_t: PhantomData<T>,
 }
 
 struct PreparedCreate {
@@ -102,7 +103,7 @@ impl<'a, DB: Database> EVMData<'a, DB> {
 }
 
 #[cfg(feature = "optimism")]
-impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, INSPECT> {
+impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool, T: 'a> EVMImpl<'a, GSPEC, DB, INSPECT, T> {
     /// If the transaction is not a deposit transaction, subtract the L1 data fee from the
     /// caller's balance directly after minting the requested amount of ETH.
     fn remove_l1_cost(
@@ -158,8 +159,8 @@ impl<'a, GSPEC: Spec, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, 
     }
 }
 
-impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> Transact<DB::Error>
-    for EVMImpl<'a, GSPEC, DB, INSPECT>
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool, T> Transact<DB::Error>
+    for EVMImpl<'a, GSPEC, DB, INSPECT, T>
 {
     fn preverify_transaction(&mut self) -> Result<(), EVMError<DB::Error>> {
         let env = self.env();
@@ -400,7 +401,9 @@ impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> Transact<DB::
     }
 }
 
-impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, GSPEC, DB, INSPECT> {
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool, T: 'a>
+    EVMImpl<'a, GSPEC, DB, INSPECT, T>
+{
     pub fn new(
         db: &'a mut DB,
         env: &'a mut Env,
@@ -409,14 +412,15 @@ impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, G
     ) -> Self {
         let journaled_state = JournaledState::new(precompiles.len(), GSPEC::SPEC_ID);
         let instruction_table = if true {
-            let instruction_table =
-                make_inspector_instruction_table(make_instruction_table::<GSPEC>());
+            let instruction_table = make_inspector_instruction_table::<'a, T, GSPEC, DB, INSPECT>(
+                make_instruction_table::<GSPEC, Self>(),
+            );
             //instruction_table[00] = Box::new(|_, _| {
             //    panic!("Instruction 0x00 should never be called");
             //});
             Arc::new(instruction_table)
         } else {
-            Arc::new(make_boxed_instruction_table::<GSPEC>())
+            Arc::new(make_boxed_instruction_table::<GSPEC, Self>())
         };
 
         Self {
@@ -433,6 +437,7 @@ impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, G
             instruction_table,
             handler: Handler::mainnet::<GSPEC>(),
             _phantomdata: PhantomData {},
+            _phamtom_data_t: PhantomData {},
         }
     }
 
@@ -677,11 +682,11 @@ impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, G
         let exit_reason = if INSPECT {
             //let host = self as &mut dyn Host;
             //interpreter.run_inspect(&instruction_table, host)
-            let host = self as &mut dyn Host;
-            interpreter.run(&instruction_table, host)
+            //let host = self as &mut dyn Host;
+            interpreter.run::<_, Self>(&instruction_table, self)
         } else {
-            let host = self as &mut dyn Host;
-            interpreter.run(&instruction_table, host)
+            //let host = self as &mut dyn Host<Self>;
+            interpreter.run::<_, Self>(&instruction_table, self)
         };
 
         (exit_reason, interpreter)
@@ -843,8 +848,8 @@ impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> EVMImpl<'a, G
     }
 }
 
-impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool> Host
-    for EVMImpl<'a, GSPEC, DB, INSPECT>
+impl<'a, GSPEC: Spec + 'static, DB: Database, const INSPECT: bool, T: 'a> Host
+    for EVMImpl<'a, GSPEC, DB, INSPECT, T>
 {
     fn step(&mut self, interp: &mut Interpreter) -> InstructionResult {
         self.inspector.step(interp, &mut self.data)
