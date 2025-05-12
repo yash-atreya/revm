@@ -6,3 +6,5 @@ use interpreter::InterpreterTypes;
 pub struct NoOpInspector;
 
 impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for NoOpInspector {}
+
+impl<CTX, INTR: InterpreterTypes> Inspector<CTX, INTR> for () {}
