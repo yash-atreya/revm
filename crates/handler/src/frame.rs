@@ -291,6 +291,10 @@ impl EthFrame<EthInterpreter> {
 
         // Fetch balance of caller.
         let caller_info = &mut context.journal_mut().load_account(inputs.caller)?.data.info;
+        println!(
+            "CREATE (v1): Loaded caller {:?}, balance: {}, nonce: {}",
+            inputs.caller, caller_info.balance, caller_info.nonce
+        );
 
         // Check if caller has enough balance to send to the created contract.
         if caller_info.balance < inputs.value {
@@ -299,10 +303,20 @@ impl EthFrame<EthInterpreter> {
 
         // Increase nonce of caller and check if it overflows
         let old_nonce = caller_info.nonce;
+        println!(
+            "CREATE (v1): About to increment nonce for caller {:?}",
+            inputs.caller
+        );
+        println!("  - Old nonce: {}", old_nonce);
         let Some(new_nonce) = old_nonce.checked_add(1) else {
             return return_error(InstructionResult::Return);
         };
         caller_info.nonce = new_nonce;
+        println!("  - New nonce: {}", new_nonce);
+        println!(
+            "  - Caller info after update: balance={}, nonce={}",
+            caller_info.balance, caller_info.nonce
+        );
         context
             .journal_mut()
             .nonce_bump_journal_entry(inputs.caller);
@@ -310,7 +324,14 @@ impl EthFrame<EthInterpreter> {
         // Create address
         let mut init_code_hash = B256::ZERO;
         let created_address = match inputs.scheme {
-            CreateScheme::Create => inputs.caller.create(old_nonce),
+            CreateScheme::Create => {
+                let addr = inputs.caller.create(old_nonce);
+                println!(
+                    "CREATE (v1) address calculation: caller={:?}, nonce={}, address={:?}",
+                    inputs.caller, old_nonce, addr
+                );
+                addr
+            }
             CreateScheme::Create2 { salt } => {
                 init_code_hash = keccak256(&inputs.init_code);
                 inputs.caller.create2(salt.to_be_bytes(), init_code_hash)
@@ -421,6 +442,7 @@ impl EthFrame<EthInterpreter> {
 
         // Fetch balance of caller.
         let caller = context.journal_mut().load_account(inputs.caller)?.data;
+        println!("CREATE: Loaded caller account {:?}, nonce: {}", inputs.caller, caller.info.nonce);
 
         // Check if caller has enough balance to send to the created contract.
         if caller.info.balance < inputs.value {
@@ -428,18 +450,25 @@ impl EthFrame<EthInterpreter> {
         }
 
         // Increase nonce of caller and check if it overflows
+        println!("CREATE: About to increment nonce for caller {:?}", inputs.caller);
+        println!("  - Current nonce: {}", caller.info.nonce);
         let Some(new_nonce) = caller.info.nonce.checked_add(1) else {
             // Can't happen on mainnet.
             return return_error(InstructionResult::Return);
         };
         caller.info.nonce = new_nonce;
+        println!("  - New nonce: {}", new_nonce);
         context
             .journal_mut()
             .nonce_bump_journal_entry(inputs.caller);
 
         let old_nonce = new_nonce - 1;
 
-        let created_address = created_address.unwrap_or_else(|| inputs.caller.create(old_nonce));
+        let created_address = created_address.unwrap_or_else(|| {
+            let addr = inputs.caller.create(old_nonce);
+            println!("CREATE address calculation: caller={:?}, nonce={}, address={:?}", inputs.caller, old_nonce, addr);
+            addr
+        });
 
         // Load account so it needs to be marked as warm for access list.
         context.journal_mut().load_account(created_address)?;

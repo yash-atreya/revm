@@ -337,6 +337,7 @@ impl<ENTRY: JournalEntryTr> JournalInner<ENTRY> {
     /// Increments the nonce of the account.
     #[inline]
     pub fn nonce_bump_journal_entry(&mut self, address: Address) {
+        println!("nonce_bump_journal_entry called for address: {:?}", address);
         self.journal.push(ENTRY::nonce_changed(address));
     }
 
@@ -427,10 +428,20 @@ impl<ENTRY: JournalEntryTr> JournalInner<ENTRY> {
         // Bytecode is not empty.
         // Nonce is not zero
         // Account is not precompile.
+        println!("CREATE check for address {:?}:", target_address);
+        println!(
+            "  - code_hash: {:?} (empty: {})",
+            target_acc.info.code_hash,
+            target_acc.info.code_hash == KECCAK_EMPTY
+        );
+        println!("  - nonce: {}", target_acc.info.nonce);
+        println!("  - balance: {}", target_acc.info.balance);
         if target_acc.info.code_hash != KECCAK_EMPTY || target_acc.info.nonce != 0 {
+            println!("  -> CREATE COLLISION DETECTED!");
             self.checkpoint_revert(checkpoint);
             return Err(TransferError::CreateCollision);
         }
+        println!("  -> CREATE allowed");
 
         // set account status to create.
         let is_created_globally = target_acc.mark_created_locally();
